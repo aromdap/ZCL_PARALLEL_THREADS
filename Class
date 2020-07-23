@@ -1,0 +1,881 @@
+class ZCL_PARALLEL_THREADS definition
+  public
+  final
+  create public .
+
+public section.
+*"* public components of class ZCL_PARALLEL_THREADS
+*"* do not include other source files here!!!
+
+  types:
+    tty_selscrn TYPE STANDARD TABLE OF rsparams .
+  types:
+    BEGIN OF ty_job_detail,
+          job_name   TYPE btcjob,
+          job_number TYPE btcjobcnt,
+          job_output TYPE string,
+          count      TYPE i,
+         END OF ty_job_detail .
+
+  class-data O_THRDS type ref to ZCL_PARALLEL_THREADS .
+
+  methods EXPORT_DATA
+    importing
+      !IV_OPTION type STRING
+      !IREF_DATA type ref to DATA optional
+      !IT_OUTPUT type TABLE optional
+      !IV_INDEX type ANY optional
+      !IV_TICKET type ANY optional
+    exporting
+      !EV_EXPORT_TICKET type STRING .
+  methods GET_OUTPUT
+    exporting
+      !ET_OUTPUT type TABLE .
+  methods GET_SELSCRN
+    importing
+      !IV_PGRM type SYREPID
+    exporting
+      !ET_PARAM type TTY_SELSCRN .
+  methods IMPORT_DATA
+    importing
+      !IV_TICKET type INDX_SRTFD optional
+      !IV_REPID type SYREPID optional
+    exporting
+      !ET_DATA type TABLE .
+  methods LOAD_RANGE
+    importing
+      !IR_INPUT type ANY TABLE .
+  methods LOAD_SELSCRN
+    importing
+      !IT_SCRN type TTY_SELSCRN .
+  methods LOAD_TABLE
+    importing
+      !IT_INPUT type ANY TABLE .
+  methods START
+    importing
+      !IV_THREADS type I optional
+      !IV_RECORDS type I optional
+      !IV_LIMIT type I optional .
+  class-methods CLASS_CONSTRUCTOR .
+  methods FLUSH .
+  methods KILL_ALL
+    importing
+      !IV_UNAME type SYUNAME .
+protected section.
+*"* protected components of class ZCL_PARALLEL_THREADS
+*"* do not include other source files here!!!
+private section.
+*"* private components of class ZCL_PARALLEL_THREADS
+*"* do not include other source files here!!!
+
+  types:
+    tty_string TYPE STANDARD TABLE OF string .
+  types:
+    tty_job_detail TYPE STANDARD TABLE OF ty_job_detail .
+  types:
+    BEGIN OF ty_tbtco,
+                jobname  TYPE btcjob,
+                jobcount TYPE btcjobcnt,
+                status   TYPE btcstatus,
+      END OF ty_tbtco .
+  types:
+    tty_tbtco TYPE STANDARD TABLE OF ty_tbtco .
+
+  data O_INTABLE type ref to DATA .
+  data O_INRANGE type ref to DATA .
+  data T_JOB_DETAIL type TTY_JOB_DETAIL .
+  data T_SELSCRN type TTY_SELSCRN .
+  data V_PRGM type SYREPID .
+  data V_THRDS type I .
+  data V_RCRDS type I .
+  data T_EXPORT_TICKETS type TTY_STRING .
+  data T_IMPORT_TICKETS type TTY_STRING .
+  data T_REF_OUTPUT type ref to DATA .
+
+  methods _SET_RECORDS_THREADS
+    importing
+      !IV_THREADS type I optional
+      !IV_RECORDS type I optional .
+  methods _OPEN_JOB
+    importing
+      !IV_REPID type SYREPID
+      !IV_NUMBER type I
+    exporting
+      !EV_JOBNAME type BTCJOB
+      !EV_JOBCOUNT type TBTCJOB-JOBCOUNT
+      !EV_SYSUBRC type SY-SUBRC .
+  methods _LOAD_DATAFRAME
+    exporting
+      !EREF_DATA_SLICE type ref to DATA .
+  methods _SUBMIT
+    importing
+      !IV_TICKET type STRING
+      !IV_JBCNT type I
+      !IV_JOBNAME type BTCJOB
+      !IV_JOBCOUNT type TBTCJOB-JOBCOUNT .
+  methods _CLOSE_JOB
+    importing
+      !IV_JOBNAME type BTCJOB
+      !IV_JOBCOUNT type TBTCJOB-JOBCOUNT
+      !IV_NUMBER type I .
+  methods _CONTROL_PROGRESS
+    importing
+      !IV_LIMIT type I optional .
+  methods _CANCEL_JOB
+    importing
+      !IT_JOBS type TTY_TBTCO .
+ENDCLASS.
+
+
+
+CLASS ZCL_PARALLEL_THREADS IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Static Public Method ZCL_PARALLEL_THREADS=>CLASS_CONSTRUCTOR
+* +-------------------------------------------------------------------------------------------------+
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+method CLASS_CONSTRUCTOR.
+  CREATE OBJECT o_thrds.
+
+endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->EXPORT_DATA
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_OPTION                      TYPE        STRING
+* | [--->] IREF_DATA                      TYPE REF TO DATA(optional)
+* | [--->] IT_OUTPUT                      TYPE        TABLE(optional)
+* | [--->] IV_INDEX                       TYPE        ANY(optional)
+* | [--->] IV_TICKET                      TYPE        ANY(optional)
+* | [<---] EV_EXPORT_TICKET               TYPE        STRING
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD export_data.
+  DATA: lv_id TYPE indx_srtfd.
+  DATA: lv_current_job_string TYPE string.
+  DATA: lo_obj TYPE REF TO cl_abap_expimp_db.
+  FIELD-SYMBOLS: <submit_input>  TYPE table.
+  FIELD-SYMBOLS: <submit_output> TYPE table.
+
+  IF iv_ticket IS NOT INITIAL.
+    lv_current_job_string = iv_ticket+19(1).
+  ELSEIF iv_index IS NOT INITIAL.
+    lv_current_job_string = iv_index.
+  ENDIF.
+  CASE iv_option.
+    WHEN 'Input'.
+      CONCATENATE v_prgm(8) '_INPUT_EXP_' lv_current_job_string INTO lv_id.
+    WHEN 'Output'.
+      CONCATENATE iv_ticket(8) '_OUTPUT_EXP_' lv_current_job_string INTO lv_id.
+  ENDCASE.
+  "Save all tickets which have been exported.
+  APPEND lv_id TO me->t_export_tickets.
+  CREATE OBJECT lo_obj.
+  "Delete INDX database before exporting data
+  TRY.
+      CALL METHOD lo_obj->delete
+        EXPORTING
+          tabname          = 'INDX'
+          client           = sy-mandt
+          area             = 'ZA'
+          id               = lv_id
+          client_specified = abap_true.
+    CATCH cx_sy_client .
+    CATCH cx_sy_generic_key .
+    CATCH cx_sy_incorrect_key .
+  ENDTRY.
+
+  "Export to Database.
+  "(Memory E/I and Shared buffer cannot hold this amount of data)
+  IF iref_data IS NOT INITIAL.      "Input export case.
+    ASSIGN iref_data->* TO <submit_input>.
+    EXPORT data FROM <submit_input> TO DATABASE indx(za) ID lv_id.
+    ev_export_ticket = lv_id.
+  ELSEIF it_output[] IS NOT INITIAL."Output export case.
+    EXPORT data FROM it_output TO DATABASE indx(za) ID lv_id.
+
+  ENDIF.
+  COMMIT WORK AND WAIT.
+
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->FLUSH
+* +-------------------------------------------------------------------------------------------------+
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD flush.
+  DATA: lv_id_in              TYPE string.
+  DATA: lv_id_out             TYPE string.
+  DATA: lv_num_string         TYPE string.
+  DATA: lv_num                TYPE i.
+  DATA: lo_importdb           TYPE REF TO cl_abap_expimp_db.
+
+
+
+  CREATE OBJECT lo_importdb.
+
+  DO me->v_thrds TIMES.
+    ADD 1 TO lv_num.
+    lv_num_string = lv_num.
+    CONCATENATE v_prgm(8) '_INPUT_EXP_' lv_num_string  INTO lv_id_in.
+    CONCATENATE v_prgm(8) '_OUTPUT_EXP_' lv_num_string INTO lv_id_out.
+    "Delete INDX database after importing data
+    TRY.
+        CALL METHOD lo_importdb->delete
+          EXPORTING
+            tabname          = 'INDX'
+            client           = sy-mandt
+            area             = 'ZA'
+            id               = lv_id_in
+            client_specified = abap_true.
+        CALL METHOD lo_importdb->delete
+          EXPORTING
+            tabname          = 'INDX'
+            client           = sy-mandt
+            area             = 'ZA'
+            id               = lv_id_out
+            client_specified = abap_true.
+      CATCH cx_sy_client .
+      CATCH cx_sy_generic_key .
+      CATCH cx_sy_incorrect_key .
+      CATCH cx_sy_ref_is_initial .
+    ENDTRY.
+  ENDDO.
+
+  CLEAR: o_intable         .
+  CLEAR: o_inrange         .
+  CLEAR: t_job_detail      .
+  CLEAR: t_selscrn         .
+  CLEAR: v_prgm            .
+  CLEAR: v_thrds           .
+  CLEAR: v_rcrds           .
+  CLEAR: t_export_tickets  .
+  CLEAR: t_import_tickets  .
+  CLEAR: t_ref_output      .
+*  CLEAR: o_thrds           .
+
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->GET_OUTPUT
+* +-------------------------------------------------------------------------------------------------+
+* | [<---] ET_OUTPUT                      TYPE        TABLE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+method GET_OUTPUT.
+  FIELD-SYMBOLS: <table> TYPE table.
+    me->import_data( IMPORTING et_data = et_output ).
+
+endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->GET_SELSCRN
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_PGRM                        TYPE        SYREPID
+* | [<---] ET_PARAM                       TYPE        TTY_SELSCRN
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+method GET_SELSCRN.
+  "Get program name for later use:
+    MOVE iv_pgrm TO v_prgm.
+    "Get selection screen parameters:
+    CALL FUNCTION 'RS_REFRESH_FROM_SELECTOPTIONS'
+      EXPORTING
+        curr_report               = iv_pgrm
+      TABLES
+        selection_table           = et_param
+*         SELECTION_TABLE_255       =
+*       EXCEPTIONS
+*         NOT_FOUND                 = 1
+*         NO_REPORT                 = 2
+*         OTHERS                    = 3
+              .
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->IMPORT_DATA
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_TICKET                      TYPE        INDX_SRTFD(optional)
+* | [--->] IV_REPID                       TYPE        SYREPID(optional)
+* | [<---] ET_DATA                        TYPE        TABLE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD import_data.
+  DATA: lref_table  TYPE REF TO cl_abap_tabledescr.
+  DATA: lref_struct TYPE REF TO cl_abap_structdescr.
+  DATA: lt_details  TYPE abap_compdescr_tab.
+  DATA: lwa_details LIKE LINE OF lt_details.
+  DATA: lt_fcat     TYPE lvc_t_fcat.
+  DATA: lwa_fcat    TYPE lvc_s_fcat.
+  DATA: lref_data   TYPE REF TO data.
+  DATA: lv_id         TYPE indx_srtfd.
+  DATA: lv_num        TYPE i         .
+  DATA: lv_repid      TYPE string    .
+  DATA: lv_num_string TYPE string    .
+  DATA: lo_importdb   TYPE REF TO cl_abap_expimp_db.
+  FIELD-SYMBOLS: <table>     TYPE STANDARD TABLE.
+
+  "In order to recupere fragmented outputs, get iv_repid_
+  MOVE iv_repid TO v_prgm.
+
+  CREATE OBJECT lo_importdb.
+  "Get structure of generic typed exporting table provided by user:
+  lref_table  ?= cl_abap_tabledescr=>describe_by_data( et_data ).
+  lref_struct ?= lref_table->get_table_line_type( ).
+  lt_details[] = lref_struct->components.
+  "Compose catalogue from components:
+  LOOP AT lt_details INTO lwa_details.
+    lwa_fcat-fieldname = lwa_details-name.
+    lwa_fcat-intlen    = lwa_details-length.
+    lwa_fcat-datatype  = lwa_details-type_kind.
+    APPEND lwa_fcat TO lt_fcat.
+    CLEAR lwa_fcat.
+
+  ENDLOOP.
+  "Create dynamic data object with the same structure that the exporting table et_data:
+  cl_alv_table_create=>create_dynamic_table( EXPORTING it_fieldcatalog  = lt_fcat
+                                                       i_length_in_byte = abap_true
+                                             IMPORTING ep_table         = lref_data ).
+
+  ASSIGN lref_data->* TO <table>.
+  IF <table> IS ASSIGNED.
+    "Import only a slice of data from memory. Workflow: program is in a parallel thread. MAIN > EXPORT > THREAD > IMPORT > TREAT DATA
+    IF iv_ticket IS NOT INITIAL.
+      TRY.
+          IMPORT data TO et_data FROM DATABASE indx(za) ID iv_ticket.
+        CATCH cx_sy_import_mismatch_error.
+      ENDTRY.
+    ELSE.
+      "Import data after all threads have finished. Workflow: MAIN > EXPORT > THREADS.IMPORT > THREADS.EXPORT > FINAL.IMPORT
+      DO me->v_thrds TIMES.
+        ADD 1 TO lv_num.
+        lv_num_string = lv_num.
+        CONCATENATE v_prgm(8) '_OUTPUT_EXP_' lv_num_string INTO lv_id.
+        TRY.
+            IMPORT data TO et_data FROM DATABASE indx(za) ID lv_id.
+          CATCH cx_sy_import_mismatch_error.
+        ENDTRY.
+        APPEND LINES OF et_data TO <table>.
+        REFRESH et_data.
+
+        "Delete INDX database after importing data
+        TRY.
+            CALL METHOD lo_importdb->delete
+              EXPORTING
+                tabname          = 'INDX'
+                client           = sy-mandt
+                area             = 'ZA'
+                id               = lv_id
+                client_specified = abap_true.
+          CATCH cx_sy_client .
+          CATCH cx_sy_generic_key .
+          CATCH cx_sy_incorrect_key .
+          CATCH cx_sy_ref_is_initial .
+        ENDTRY.
+
+        CHECK lv_num EQ v_thrds.
+        "Return back imported data to caller:
+        IF <table> IS NOT INITIAL.
+          REFRESH et_data.
+          et_data[] = <table>.
+        ENDIF.
+        EXIT.
+      ENDDO.
+      COMMIT WORK.
+      "Control exit:
+      IF lv_num EQ v_thrds.
+        EXIT.
+      ENDIF.
+
+    ENDIF.
+  ENDIF.
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->KILL_ALL
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_UNAME                       TYPE        SYUNAME
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD kill_all.
+
+  DATA: lt_tbtco TYPE STANDARD TABLE OF me->ty_tbtco.
+* ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨ *
+  "Get all the Jobs for user:
+  SELECT jobname jobcount status FROM tbtco
+    INTO TABLE lt_tbtco
+    WHERE sdluname = iv_uname.
+  CHECK lt_tbtco IS NOT INITIAL.
+  "Delete completed jobs:
+  DELETE lt_tbtco WHERE status EQ 'F'.
+  DELETE lt_tbtco WHERE status EQ 'A'.
+  "For the rest, cancel:
+  me->_cancel_job( lt_tbtco[] ).
+
+
+
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->LOAD_RANGE
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IR_INPUT                       TYPE        ANY TABLE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD load_range.
+  IF o_inrange IS NOT BOUND.
+    GET REFERENCE OF ir_input INTO o_inrange.
+
+  ENDIF.
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->LOAD_SELSCRN
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_SCRN                        TYPE        TTY_SELSCRN
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+method LOAD_SELSCRN.
+  MOVE it_scrn TO t_selscrn.
+
+endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->LOAD_TABLE
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_INPUT                       TYPE        ANY TABLE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD load_table.
+  IF o_intable IS NOT BOUND.
+    GET REFERENCE OF it_input INTO o_intable.
+
+  ENDIF.
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PARALLEL_THREADS->START
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_THREADS                     TYPE        I(optional)
+* | [--->] IV_RECORDS                     TYPE        I(optional)
+* | [--->] IV_LIMIT                       TYPE        I(optional)
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD start.
+  DATA: lv_jobname        TYPE btcjob                              .
+  DATA: lv_number         TYPE i VALUE 0                           .
+  DATA: lv_subrc          TYPE sy-subrc                            .
+  DATA: lv_jobcount       TYPE tbtcjob-jobcount                    .
+  DATA: lref_submit_input TYPE REF TO data.
+  DATA: lv_submit_ticket  TYPE string.
+
+  "Get the number of threads and the number of records:
+  me->_set_records_threads( iv_records = iv_records
+                            iv_threads = iv_threads ).
+
+  DO v_thrds TIMES.
+    ADD 1 TO lv_number.
+    "Open jobs:
+    me->_open_job( EXPORTING iv_repid    = v_prgm
+                             iv_number   = lv_number
+                   IMPORTING ev_jobname  = lv_jobname
+                             ev_jobcount = lv_jobcount
+                             ev_sysubrc  = lv_subrc ).
+    IF lv_subrc EQ 0.
+      "Load portions of input:
+      me->_load_dataframe( IMPORTING eref_data_slice = lref_submit_input ).
+      CHECK lref_submit_input IS BOUND.
+      "Export the portion of input to buffer and get ticket back.
+      me->export_data( EXPORTING iv_option = 'Input'
+                                 iref_data = lref_submit_input
+                                 iv_index  = lv_number
+                        IMPORTING ev_export_ticket = lv_submit_ticket ).
+      "Submit via job with ticket for buffer inputs:
+      me->_submit( EXPORTING iv_ticket   = lv_submit_ticket
+                             iv_jobname  = lv_jobname
+                             iv_jobcount = lv_jobcount
+                             iv_jbcnt    = lv_number ).
+
+      me->_close_job( EXPORTING iv_jobname  = lv_jobname
+                                iv_jobcount = lv_jobcount
+                                iv_number   = lv_number ).
+
+    ELSE.
+      "Error opening job
+    ENDIF.
+  ENDDO.
+  me->_control_progress( iv_limit = iv_limit ).
+
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_CANCEL_JOB
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_JOBS                        TYPE        TTY_TBTCO
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD _cancel_job.
+  DATA: lt_tbtco TYPE tty_tbtco.
+  DATA: ls_tbtco TYPE ty_tbtco.
+  TYPES: BEGIN OF lty_cancel,
+          jobname TYPE btcjob,
+          jobcount TYPE btcjobcnt,
+          wp_pif TYPE btcwppid,
+          END OF lty_cancel.
+  DATA: ltwp_pif  TYPE STANDARD TABLE OF lty_cancel.
+  DATA: lswp_pif  TYPE lty_cancel.
+  DATA: lvwp_pif  TYPE wpinfo-wp_pid.
+
+  lt_tbtco[] = it_jobs[].
+  DELETE lt_tbtco WHERE status EQ 'F'.
+  DELETE lt_tbtco WHERE status EQ 'A'.
+
+  SELECT jobname jobcount wpprocid
+    FROM tbtco
+      INTO TABLE ltwp_pif
+    FOR ALL ENTRIES IN lt_tbtco
+    WHERE jobname EQ lt_tbtco-jobname
+    AND  jobcount EQ lt_tbtco-jobcount.
+  IF sy-subrc EQ 0.
+
+    LOOP AT lt_tbtco INTO ls_tbtco.
+      TRY .
+          CALL FUNCTION 'BP_JOB_ABORT'
+            EXPORTING
+              jobcount                   = ls_tbtco-jobcount
+              jobname                    = ls_tbtco-jobname
+            EXCEPTIONS
+              checking_of_job_has_failed = 1                "#EC ENHOK
+              job_abort_has_failed       = 2                "#EC ENHOK
+              job_does_not_exist         = 3                "#EC ENHOK
+              job_is_not_active          = 4                "#EC ENHOK
+              no_abort_privilege_given   = 5                "#EC ENHOK
+              OTHERS                     = 6.               "#EC ENHOK
+
+        CATCH cx_sy_dyn_call_illegal_type.
+          "CONTINUE
+
+      ENDTRY.
+*    ENDIF.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+  ENDLOOP.
+ENDIF.
+
+
+
+
+
+***CALL FUNCTION 'RSPO_CANCEL_JOB'
+***  EXPORTING
+***    pjident           =
+***    pjnumber          =
+***EXCEPTIONS
+***  NOT_DELETED       = 1
+***  OTHERS            = 2
+***          .
+***IF sy-subrc <> 0.
+**** Implement suitable error handling here
+***ENDIF.
+
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_CLOSE_JOB
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_JOBNAME                     TYPE        BTCJOB
+* | [--->] IV_JOBCOUNT                    TYPE        TBTCJOB-JOBCOUNT
+* | [--->] IV_NUMBER                      TYPE        I
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD _close_job.
+  DATA: lv_message TYPE string.
+  DATA: lv_number_string TYPE string.
+  DATA: lwa_job_details TYPE ty_job_detail.
+
+  CALL FUNCTION 'JOB_CLOSE'
+    EXPORTING
+      jobcount             = iv_jobcount
+      jobname              = iv_jobname
+      sdlstrtdt            = sy-datum
+      sdlstrttm            = sy-uzeit
+    EXCEPTIONS
+      cant_start_immediate = 1
+      invalid_startdate    = 2
+      jobname_missing      = 3
+      job_close_failed     = 4
+      job_nosteps          = 5
+      job_notex            = 6
+      lock_failed          = 7
+      invalid_target       = 8
+      OTHERS               = 9.
+  IF sy-subrc IS INITIAL.
+
+    "Save job detail for posterior follow-up
+    CLEAR: lwa_job_details.
+    lwa_job_details-job_name = iv_jobname.
+    lwa_job_details-job_number = iv_jobcount.
+    lwa_job_details-count = iv_number.
+    APPEND lwa_job_details TO me->t_job_detail.
+
+    "Job * scheduled for selection from *
+    lv_number_string = iv_number.
+    CONCATENATE 'Job' lv_number_string 'correctly released' INTO lv_message SEPARATED BY space.
+    MESSAGE lv_message TYPE 'S'.
+    COMMIT WORK.
+
+  ELSE.
+****     Error closing the job
+  ENDIF.
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_CONTROL_PROGRESS
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_LIMIT                       TYPE        I(optional)
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD _control_progress.
+  TYPES: BEGIN OF t_tbtco,
+                jobname  TYPE btcjob,
+                jobcount TYPE btcjobcnt,
+                status   TYPE btcstatus,
+               END OF t_tbtco.
+  DATA: lv_jobs_finished  TYPE flag.
+  DATA: lv_jobs_completed TYPE string.
+  DATA: lt_tbtco          TYPE STANDARD TABLE OF t_tbtco.
+  DATA: lwa_tbtco         TYPE t_tbtco.
+  DATA: lwa_jobs          TYPE ty_job_detail.
+
+  IF me->t_job_detail[] IS NOT INITIAL.
+    SORT me->t_job_detail BY count DESCENDING.
+    READ TABLE me->t_job_detail INTO lwa_jobs INDEX 1.
+    "Waiting for jobs to finish
+    MESSAGE 'Waiting for jobs to finish' TYPE 'S'.
+    COMMIT WORK.
+
+* Wait & Check if all the job closed are completed
+    WHILE lv_jobs_finished IS INITIAL.
+
+*   Get all the Finished Jobs for Jobs SubmitteD
+      SELECT jobname jobcount status FROM tbtco
+        INTO TABLE lt_tbtco
+        FOR ALL ENTRIES IN me->t_job_detail
+        WHERE jobname = me->t_job_detail-job_name
+        AND   jobcount = me->t_job_detail-job_number.
+      IF sy-subrc NE 0.
+        CONTINUE.
+      ENDIF.
+
+*   Check if all the jobs completed ie either finished or cancelled
+      CLEAR lv_jobs_completed.
+      LOOP AT lt_tbtco INTO lwa_tbtco.
+        IF lwa_tbtco-status = 'F' OR lwa_tbtco-status = 'A'.
+          lv_jobs_completed = lv_jobs_completed + 1.
+
+        ENDIF.
+        "If user provided with a maximum number of jobs to be completed, when met, cancel the rest of jobs:
+        CHECK iv_limit IS NOT INITIAL.
+        CHECK iv_limit LT lv_jobs_completed.
+        me->_cancel_job( lt_tbtco ).
+        EXIT.
+
+      ENDLOOP.
+*   If total number of Jobs Submitted is equal to total Number of Jobs completed Exit
+      IF lwa_jobs-count = lv_jobs_completed
+        OR iv_limit LT lv_jobs_completed.
+        lv_jobs_finished = abap_true.
+        EXIT.
+      ENDIF.
+      WAIT UP TO 2 SECONDS.  "Wait time to check the completion of Job
+    ENDWHILE.
+
+
+  ELSE.
+    "There have been errors opening, scheduling or closing jobs.
+    MESSAGE 'There have been errors opening, scheduling or closing jobs' TYPE 'I' DISPLAY LIKE 'E'.
+    COMMIT WORK.
+
+  ENDIF.
+
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_LOAD_DATAFRAME
+* +-------------------------------------------------------------------------------------------------+
+* | [<---] EREF_DATA_SLICE                TYPE REF TO DATA
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD _load_dataframe.
+  FIELD-SYMBOLS: <corrected_table> TYPE STANDARD TABLE.
+  FIELD-SYMBOLS: <return_table>    TYPE STANDARD TABLE.
+  FIELD-SYMBOLS: <table>           TYPE STANDARD TABLE.
+  FIELD-SYMBOLS: <wa>              TYPE any.
+  DATA: lref_wa                    TYPE REF TO  data.
+  DATA: lref_corrected             TYPE REF TO  data.
+
+  "Dereference input to a field-symbol:
+  IF o_intable IS NOT INITIAL.
+    ASSIGN o_intable->* TO <table>.
+
+  ELSEIF o_inrange IS NOT INITIAL.
+    ASSIGN o_inrange->* TO <table>.
+
+  ENDIF.
+  "Create a reference of structure to loop at with input shape:
+  CREATE DATA lref_wa LIKE LINE OF <table>.
+  "Create a reference data object to return back to caller:
+  CREATE DATA eref_data_slice LIKE <table>.
+  ASSIGN eref_data_slice->* TO <return_table>.
+  "Create a auxiliar reference data object to store temporaly the records of input substracting the sliced records:
+  CREATE DATA lref_corrected LIKE <table>.
+  ASSIGN lref_corrected->* TO <corrected_table>.
+  "Start to slice the input dataframe:
+  LOOP AT <table> REFERENCE INTO lref_wa.
+    ASSIGN lref_wa->* TO <wa>.
+    "Slice to return table until number of records per slide are met.
+    IF sy-tabix LE v_rcrds.
+      IF <wa> IS ASSIGNED.
+        APPEND <wa> TO <return_table>.
+*        DELETE <table> FROM <wa>.
+        UNASSIGN <wa>.
+      ENDIF.
+    ELSE.
+      "Once number of records are met, get the rest of records to auxiliar reference data object.
+      IF <wa> IS ASSIGNED.
+        APPEND <wa> TO <corrected_table>.
+        UNASSIGN <wa>.
+      ENDIF.
+    ENDIF.
+
+  ENDLOOP.
+  "Update your class data object for input with the records which are still left to process in further threads.
+  IF o_intable IS BOUND.
+    CLEAR o_intable.
+    o_intable = lref_corrected.
+  ELSEIF o_inrange IS BOUND.
+    CLEAR o_inrange.
+    o_inrange = lref_corrected.
+
+  ENDIF.
+ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_OPEN_JOB
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_REPID                       TYPE        SYREPID
+* | [--->] IV_NUMBER                      TYPE        I
+* | [<---] EV_JOBNAME                     TYPE        BTCJOB
+* | [<---] EV_JOBCOUNT                    TYPE        TBTCJOB-JOBCOUNT
+* | [<---] EV_SYSUBRC                     TYPE        SY-SUBRC
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+method _OPEN_JOB.
+  DATA: lv_aux TYPE string.
+*¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨*
+    MOVE iv_number TO lv_aux.
+    CONCATENATE v_prgm lv_aux INTO ev_jobname SEPARATED BY '_'.
+    CALL FUNCTION 'JOB_OPEN'
+      EXPORTING
+        jobname          = ev_jobname
+      IMPORTING
+        jobcount         = ev_jobcount
+      EXCEPTIONS
+        cant_create_job  = 1
+        invalid_job_data = 2
+        jobname_missing  = 3
+        OTHERS           = 4.
+    "Return sy-subrc for control:
+    ev_sysubrc = sy-subrc.
+
+endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_SET_RECORDS_THREADS
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_THREADS                     TYPE        I(optional)
+* | [--->] IV_RECORDS                     TYPE        I(optional)
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+method _SET_RECORDS_THREADS.
+  FIELD-SYMBOLS: <table> TYPE ANY TABLE.
+    FIELD-SYMBOLS: <wa> TYPE any.
+    DATA: lv_lines TYPE i.
+    DATA: lv_aux   TYPE i.
+    DATA: lv_a   TYPE i.
+    DATA: lv_b   TYPE i.
+
+    "Dereference input to a field-symbol:
+    IF o_intable IS NOT INITIAL.
+      ASSIGN o_intable->* TO <table>.
+
+    ELSEIF o_inrange IS NOT INITIAL.
+      ASSIGN o_inrange->* TO <table>.
+
+    ENDIF.
+    "Count the lines of the input, whether it is a table or a range.
+    DESCRIBE TABLE <table> LINES lv_lines.
+    IF iv_threads IS SUPPLIED.
+      "Having the number of threads, calculate the number of records per thread based on the inputs:
+      MOVE iv_threads TO lv_a.
+
+    ELSEIF iv_records IS SUPPLIED.
+      "Having the number of records, calculate the number of threads based on the inputs:
+      MOVE iv_records TO lv_a.
+
+    ELSEIF iv_threads IS SUPPLIED AND iv_records IS SUPPLIED.
+      "Error message: choose only one option.
+    ENDIF.
+
+    MOVE lv_lines TO lv_b.
+    DIVIDE lv_b BY lv_a.
+    lv_aux = lv_b * lv_a.
+    IF lv_aux LT lv_lines.
+      ADD 1 TO lv_b.
+
+    ENDIF.
+    IF iv_threads IS SUPPLIED.
+      "A is threads and B is records.
+      MOVE lv_a TO v_thrds.
+      MOVE lv_b TO v_rcrds.
+
+    ELSEIF iv_records IS SUPPLIED.
+      "B is threads and A is records.
+      MOVE lv_b TO v_thrds.
+      MOVE lv_a TO v_rcrds.
+
+    ENDIF.
+
+endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PARALLEL_THREADS->_SUBMIT
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_TICKET                      TYPE        STRING
+* | [--->] IV_JBCNT                       TYPE        I
+* | [--->] IV_JOBNAME                     TYPE        BTCJOB
+* | [--->] IV_JOBCOUNT                    TYPE        TBTCJOB-JOBCOUNT
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+METHOD _submit.
+  DATA: lref_wa TYPE REF TO rsparams.
+  READ TABLE me->t_selscrn REFERENCE INTO lref_wa WITH KEY selname = 'P_SUBMIT'.
+  IF sy-subrc EQ 0.
+    lref_wa->low = iv_ticket.
+  ENDIF.
+
+  SUBMIT (v_prgm) WITH SELECTION-TABLE t_selscrn
+                  VIA JOB iv_jobname
+                  NUMBER  iv_jobcount
+                  AND RETURN.
+
+ENDMETHOD.
+ENDCLASS.
