@@ -1,0 +1,164 @@
+*&---------------------------------------------------------------------*
+*& Report  Z_TEST_PARALLEL_THREADS_ARD
+*&---------------------------------------------------------------------*
+*&Program to explain the use of class to include in report and allow
+*&multi-thread execution in parallel.
+*&
+*&Inputs and outputs are handle by the class lcl_threads dinamically.
+*&
+*&Method start can be set by number of threads or number of records per thread.
+*&Method lcl_threads=>o_thrds->start( iv_threads = 7 ). ----> (number of threads per execution dynamically calculated)
+*&Method lcl_threads=>o_thrds->start( iv_records = 700 ). --> (number of records per thread    dynamically calculated)
+*&
+*&Requirements:
+*&  Declare parameters p_thrds and p_submit in your report as you find them in this one.
+*&  Declare a table t_selscrn as in line 28. This table will get your selection screen parameters.
+*&  You will need to change them as you would like them to be in your parallel submit.
+*&  Example provided in code.
+*&
+*&The class will do the rest.
+*&
+*&
+*&>>>>>>>>>>>>>>>IN MAIN PROGRAM .........
+*&lcl_threads=>o_thrds->load_table( t_table ).
+*&lcl_threads=>o_thrds->get_selscrn( EXPORTING iv_pgrm = sy-repid
+*&                                   IMPORTING et_param = t_selscrn ).
+*&DATA: ref_wa TYPE REF TO rsparams.
+*&READ TABLE t_selscrn REFERENCE INTO ref_wa WITH KEY selname = 'P_THRDS'.
+*&IF sy-subrc EQ 0.
+*&  MOVE abap_true TO ref_wa->low.
+*&ENDIF.
+*&lcl_threads=>o_thrds->load_selscrn( t_selscrn ).
+*&lcl_threads=>o_thrds->start( iv_threads = 7 ).
+*&lcl_threads=>o_thrds->import_data(  EXPORTING iv_repid = sy-repid
+*                                     IMPORTING et_data = lt_output ).
+*&
+*&
+*&
+*&>>>>>>>>>>>>>>>IN PARALLEL SECTION OF PROGRAM .....
+*&lcl_threads=>o_thrds->import_buffer( EXPORTING iv_ticket = p_submit
+*&                                     IMPORTING et_data   = t_table_slice ).
+*&lcl_threads=>o_thrds->export_data( EXPORTING iv_option = 'Output'
+*&                                             it_output = t_outputs[]
+*&                                             iv_ticket = p_submit    ).
+*&
+*&---------------------------------------------------------------------*
+
+REPORT  z_test_parallel_threads_ard.
+
+INCLUDE z_threads_sel.
+INCLUDE z_threads_cls.
+
+START-OF-SELECTION.
+
+*   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨   *
+  DATA: t_selscrn TYPE STANDARD TABLE OF rsparams.
+*   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨   *
+  CASE p_thrds.
+    WHEN abap_false.
+      "A. Load a table to work with.
+      TYPES: rty_datum TYPE RANGE OF sydatum.
+      DATA: t_table TYPE STANDARD TABLE OF user_addr.
+      DATA: r_range TYPE rty_datum.
+      DATA: wa_range LIKE LINE OF r_range.
+      DATA: v_date TYPE sy-datum.
+
+      SELECT * FROM user_addr INTO TABLE t_table.
+      "B. Lets load some records in the input range.
+      v_date = sy-datum.
+      DO 100 TIMES.
+        wa_range-sign   = 'I'.
+        wa_range-option = 'EQ'.
+        wa_range-low    = v_date.
+        APPEND wa_range TO r_range.
+        SUBTRACT 1 FROM v_date.
+      ENDDO.
+*   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨  *
+      "Now, start to set up your parallel execution:
+      "1A. Import input table:
+      zcl_parallel_threads=>o_thrds->load_table( t_table ).
+      "1B. Import range if wished instead:
+*      lcl_threads=>o_thrds->load_range( r_range ).
+      "2. Get a table with selection screen parameters for threads submit:
+      zcl_parallel_threads=>o_thrds->get_selscrn( EXPORTING iv_pgrm = sy-repid
+                                                  IMPORTING et_param = t_selscrn ).
+
+      "3. Change values of selscrn parameters to allow correct multi-thread execution:
+      DATA: ref_wa TYPE REF TO rsparams.
+      READ TABLE t_selscrn REFERENCE INTO ref_wa WITH KEY selname = 'P_THRDS'.
+      IF sy-subrc EQ 0.
+        "4. Here, choose the values of the selection screen parameters for the parallel execution: NO-DISPLAY p_threads = abap_true
+        MOVE abap_true TO ref_wa->low.
+      ENDIF.
+
+      "5. Now, load the selection screen table into the class:
+      zcl_parallel_threads=>o_thrds->load_selscrn( t_selscrn ).
+      "6. With user_addrything ready, start the parallel threads execution: indicate the number of threads or number of records per thread
+      zcl_parallel_threads=>o_thrds->start( iv_threads = 7 ).
+      "9. Get the output results from parallel executions if needed:
+      DATA: lt_output TYPE STANDARD TABLE OF user_addr.
+      zcl_parallel_threads=>o_thrds->import_data( EXPORTING iv_repid = sy-repid
+                                                  IMPORTING et_data = lt_output ).
+
+
+
+      "Display your final data:
+      DATA: o_alv TYPE REF TO cl_salv_table.
+      cl_salv_table=>factory( IMPORTING r_salv_table = o_alv CHANGING t_table = lt_output ).
+      o_alv->display( ).
+
+*   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨  *
+    WHEN abap_true.
+      DATA: lv_lines      TYPE i.
+      DATA: lv_bypass     TYPE string.
+      DATA: lv_msg        TYPE string.
+
+      "7. Import inputs from buffer to work with them:
+      "7A. You will have to have an internal table to receive the data from buffer: with same type of exported data!
+      DATA: t_table_slice  TYPE STANDARD TABLE OF user_addr.
+      DATA: r_datum_slice TYPE rty_datum.
+      "7B. Now get your data to the data object from buffer:
+      zcl_parallel_threads=>o_thrds->import_data( EXPORTING iv_ticket = p_submit
+                                                  IMPORTING et_data   = t_table_slice ).
+
+      "Log message for background check:
+      DESCRIBE TABLE t_table_slice[] LINES lv_lines.
+      MOVE lv_lines TO lv_bypass.
+      CONCATENATE 'Number of registers in sliced input: ' lv_bypass INTO lv_msg SEPARATED BY space.
+      MESSAGE lv_msg TYPE 'S'.
+      CLEAR lv_msg.
+
+      "Parallel logic of program .... "You can use the input data <table> as you like now.
+      "You can even make a copy to a local itab with the strucutre known by you if you feel more confortable.
+      DATA: t_outputs TYPE STANDARD TABLE OF user_addr.
+*      DATA: t_outputs TYPE rty_datum.
+      FIELD-SYMBOLS: <wa>    TYPE any.
+      FIELD-SYMBOLS: <field> TYPE any.
+      "As a example, I am going to only get as output the first line of each of the inputs.
+      "Therefore, I would have in my final program a table as an output with as many rows as parallel threads I had.
+      LOOP AT t_table_slice ASSIGNING <wa>.
+        IF <wa> IS ASSIGNED.
+          ASSIGN COMPONENT 'BNAME' OF STRUCTURE <wa> TO <field>.
+          IF <field> IS ASSIGNED.
+            IF <field> EQ sy-uname.
+              APPEND <wa> TO t_outputs[].
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+      "8. Export outputs if needed to main program execution:
+      zcl_parallel_threads=>o_thrds->export_data( EXPORTING iv_option = 'Output'
+                                                   it_output = t_outputs[]
+                                                   iv_ticket = p_submit    ).
+
+      "Log message for background check:
+      DESCRIBE TABLE t_outputs[] LINES lv_lines.
+      MOVE lv_lines TO lv_bypass.
+      CONCATENATE 'Number of registers in output: ' lv_bypass INTO lv_msg SEPARATED BY space.
+      MESSAGE lv_msg TYPE 'S'.
+      CLEAR lv_msg.
+
+  ENDCASE.
+
+END-OF-SELECTION.
